@@ -5,6 +5,7 @@ from math import floor, ceil
 import os, sys
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.optim import Adam, lr_scheduler
 from tqdm import tqdm
 import utils as utils
@@ -14,6 +15,10 @@ import torch.autograd as autograd
 import nvidia_smi
 from torch.utils.tensorboard import SummaryWriter
 
+"""
+1. layer normalization 
+2. bilinear up-down sample 
+"""
 
 class MyDataParallel(nn.DataParallel):
     """
@@ -24,6 +29,7 @@ class MyDataParallel(nn.DataParallel):
             return super().__getattr__(name)
         except AttributeError:
             return getattr(self.module, name)
+
 
 class ProgressiveGANTrainer:
 
@@ -39,7 +45,10 @@ class ProgressiveGANTrainer:
         self.nz = config.nz
         self.optimizer = config.optimizer
 
-        self.resl = 2  # we start from 2^2 = 4
+        self.start_resl = config.start_resl
+        self.start_resl = 2
+
+        self.resl = self.start_resl  # we start from 2^2 = 4
         self.lr = config.lr
         self.eps_drift = config.eps_drift
         self.smoothing = config.smoothing
@@ -58,10 +67,11 @@ class ProgressiveGANTrainer:
         self.flag_flush_dis = False
         self.flag_add_noise = self.config.flag_add_noise
         self.flag_add_drift = self.config.flag_add_drift
+        self.upsam_mode = self.config.upsam_mode  # either 'nearest' or 'trilinear'
 
-        self.batchSize = {2:64*3, 3:64*3, 4:64*3, 5:64*3, 6:32*3, 7:16*3}      # key is resl, content is batchsize for each scale
-        self.fadeInEpochs = {2:0, 3:5000, 4:5000, 5:5000, 6:5000, 7:5000}
-        self.stableEpochs = {2:5000, 3:5000, 4:5000, 5:5000, 6:5000, 7:5000}
+        self.batchSize = {2: 64 * 3, 3: 64 * 3, 4: 64 * 3, 5: 64 * 3, 6: 32 * 3, 7: 10 * 3}
+        self.fadeInEpochs = {2: 0, 3: 5000, 4: 5000, 5: 5000, 6: 5000, 7: 5000}
+        self.stableEpochs = {2: 5000, 3: 5000, 4: 5000, 5: 5000, 6: 5000, 7: 5000}
 
         # network
         self.G = net.Generator(config).cuda()
@@ -71,11 +81,14 @@ class ProgressiveGANTrainer:
         print('Discriminator structure: ')
         print(self.D.model)
 
-        self.writer = SummaryWriter('runs')
+        self.writer = SummaryWriter('runs_new')
         self.global_batch_done = 0
 
         self.G = MyDataParallel(self.G, device_ids=[0, 1, 2])
         self.D = MyDataParallel(self.D, device_ids=[0, 1, 2])
+
+        if self.start_resl != 2:
+            self.load_model(level=self.start_resl - 1)  # if load_resl==3, model loaded was done on training at 3, should start with resl = 4
 
         # define all dataloaders into a dictionary
         self.dataloaders = {}
@@ -86,6 +99,7 @@ class ProgressiveGANTrainer:
 
         # ship new model to cuda, and update optimizer
         self.renew_everything()
+
 
     def renew_everything(self):
 
@@ -107,7 +121,7 @@ class ProgressiveGANTrainer:
 
         self.test_noise = torch.randn(5, self.nz).cuda()
 
-        for self.resl in range(2, self.max_resl + 1):
+        for self.resl in range(self.start_resl, self.max_resl + 1):
 
             # fadein
             if self.fadeInEpochs[self.resl]:
@@ -140,6 +154,8 @@ class ProgressiveGANTrainer:
 
         dataloader = self.dataloaders[resl]
 
+        alpha = self.fadein['gen'].get_alpha() if self.fadein['gen'] else 1
+
         for i, (data, _) in enumerate(dataloader):
 
             batches_done = epoch * len(dataloader) + i
@@ -151,6 +167,7 @@ class ProgressiveGANTrainer:
             self.D.zero_grad()
 
             # train with real
+            data = self.interpolate(data, alpha)
             real = data.cuda()
             D_real = self.D(real)
             D_real = -D_real.mean()
@@ -171,7 +188,7 @@ class ProgressiveGANTrainer:
             Wasserstein_D = - D_real - D_fake
             self.opt_d.step()
 
-            if batches_done % (10 - self.resl) == 0:
+            if batches_done % (10 - self.resl) == 0: # ncritic = 10 - self.resl
                 ###########################
                 # (2) Update G network
                 ###########################
@@ -196,16 +213,16 @@ class ProgressiveGANTrainer:
                     self.writer.add_scalar('Loss/G cost', -G_cost.data.cpu().numpy(), self.global_batch_done)
                     self.writer.add_scalar('W_dis', Wasserstein_D.data.cpu().numpy(), self.global_batch_done)
                     self.writer.add_scalar('GradNorm', grad_norm.data.cpu().numpy(), self.global_batch_done)
-                    self.writer.add_scalar('GPU%', self.show_GPU(), self.global_batch_done)
                 except:
                     pass
 
             if batches_done % 200 == 0:
-                fake = self.G(self.test_noise).data.squeeze()
-                resolution = 2 ** (self.resl)
-                imagegrid = utils.save_image(fake.data.cpu().numpy(), "./images/" + "{}^{}".format(resolution, resolution) + stage + "%d.png" % batches_done, nrow=5, ncol=3, scale=self.resl)
-                # self.writer.add_image("./images/" + "{} {}^{}".format(self.global_batch_done, resolution,
-                #                                                       resolution) + stage + "%d" % batches_done, imagegrid, dataformats='HW')
+                with torch.no_grad():
+                    fake = self.G(self.test_noise).data.squeeze().cpu().numpy()
+                    resolution = 2 ** (self.resl)
+                    utils.save_image(fake, "./images/" + "{}^{}".format(resolution, resolution) + stage + "%d.png" % batches_done, nrow=5, ncol=3, scale=self.resl)
+                    del fake
+
 
     def calc_gradient_penalty(self, real_data, fake_data):
         alpha = torch.rand(self.batchSize[self.resl], 1, 1, 1, 1)
@@ -226,10 +243,31 @@ class ProgressiveGANTrainer:
         gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * self.config.Lambda
         return gradient_penalty, gradients.norm(2, dim=1).mean()
 
+
     def show_GPU(self):
         res = nvidia_smi.nvmlDeviceGetUtilizationRates(self.handle)
         # print(f'gpu: {res.gpu}%, gpu-mem: {res.memory}%')
         return res.memory
+
+
+    def interpolate(self, x, alpha):
+        lowx = F.avg_pool3d(x, kernel_size=2, stride=2)
+        lowx_upsample = nn.Upsample(scale_factor=2, mode=self.upsam_mode)(lowx)
+        return x * alpha + lowx_upsample * (1-alpha)
+
+
+    def load_model(self, level):
+        G_pth = './checkpoint_dir/G_stable_{}.pth'.format(level)
+        D_pth = './checkpoint_dir/D_stable_{}.pth'.format(level)
+        for resl in range(3, level+1):
+            self.G.grow_network(resl)
+            self.G.flush_network()
+            self.D.grow_network(resl)
+            self.D.flush_network()
+        self.G.load_state_dict(torch.load(G_pth))
+        self.D.load_state_dict(torch.load(D_pth))
+        print('successfully loaded the model at level ' + str(level))
+
 
 
 if __name__ == "__main__":

@@ -42,6 +42,9 @@ class fadein_layer(nn.Module):
         self.alpha = self.alpha + delta
         self.alpha = max(0, min(self.alpha, 1.0))
 
+    def get_alpha(self):
+        return self.alpha
+
     # input : [x_low, x_high] from ConcatTable()
     def forward(self, x):
         return torch.add(x[0].mul(1.0 - self.alpha), x[1].mul(self.alpha))

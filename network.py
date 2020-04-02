@@ -18,6 +18,7 @@ class Generator(nn.Module):
         self.flag_leaky = config.flag_leaky
         self.flag_tanh = config.flag_tanh
         self.flag_norm_latent = config.flag_norm_latent
+        self.upsam_mode = config.upsam_mode  # either 'nearest' or 'trilinear'
         self.nc = config.nc    # color channel number of image
         self.nz = config.nz    # random noise dimension
         self.ngf = config.ngf  # first conv layer out_channel number
@@ -34,14 +35,16 @@ class Generator(nn.Module):
         self.module_names = get_module_names(model)
         return model
 
+
     def first_block(self):
         layers = []
         ndim = self.ngf
         if self.flag_norm_latent:
             layers.append(pixelwise_norm_layer())
-        layers = deconv(layers, self.nz, ndim, 4, 1, 0, self.flag_leaky, self.flag_bn, self.flag_wn, self.flag_pixelwise)
-        # layers = deconv(layers, ndim, ndim, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn, self.flag_pixelwise)
+        layers = Trans_conv(layers, self.nz, ndim, 4, 1, 0, self.flag_leaky, self.flag_bn, self.flag_wn, self.flag_pixelwise)
+        #layers = deconv(layers, ndim, ndim, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn, self.flag_pixelwise)
         return nn.Sequential(*layers), ndim
+
 
     def intermediate_block(self, resl):
 
@@ -52,15 +55,13 @@ class Generator(nn.Module):
         ndim = int(ndim)
 
         layers = []
-        # layers.append(nn.Upsample(scale_factor=2, mode='nearest'))  # scale up by factor of 2.0
+        layers.append(nn.Upsample(scale_factor=2, mode=self.upsam_mode))  # scale up by factor of 2.0
 
-
-        layers = deconv(layers, ndim * 2, ndim, 4, 2, 1, self.flag_leaky, self.flag_bn, self.flag_wn,
-                        self.flag_pixelwise)
-        # layers = deconv(layers, ndim, ndim, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn,
-        #                 self.flag_pixelwise)
+        layers = deconv(layers, ndim*2, ndim, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn, self.flag_pixelwise)
+        #layers = deconv(layers, ndim, ndim, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn, self.flag_pixelwise)
 
         return nn.Sequential(*layers), ndim, layer_name
+
 
     def to_rgb_block(self, c_in):
         layers = []
@@ -68,6 +69,7 @@ class Generator(nn.Module):
                         self.flag_pixelwise, only=True)
         if self.flag_tanh:  layers.append(nn.Tanh())
         return nn.Sequential(*layers)
+
 
     def grow_network(self, resl):
         # we make new network since pytorch does not support remove_module()
@@ -84,7 +86,7 @@ class Generator(nn.Module):
                                                                                        int(pow(2, resl))))
             low_resl_to_rgb = deepcopy_module(self.model, 'to_rgb_block')
             prev_block = nn.Sequential()
-            prev_block.add_module('low_resl_upsample', nn.Upsample(scale_factor=2, mode='nearest'))
+            prev_block.add_module('low_resl_upsample', nn.Upsample(scale_factor=2, mode=self.upsam_mode))
             prev_block.add_module('low_resl_to_rgb', low_resl_to_rgb)
 
             inter_block, ndim, self.layer_name = self.intermediate_block(resl)
@@ -152,7 +154,7 @@ class Discriminator(nn.Module):
         ndim = self.ndf
         layers = []
         # layers.append(minibatch_std_concat_layer())
-        # layers = conv(layers, ndim, ndim, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn, pixel=False)
+        #layers = conv(layers, ndim, ndim, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn, pixel=False)
         layers = conv(layers, ndim, ndim, 4, 1, 0, self.flag_leaky, self.flag_bn, self.flag_wn, pixel=False, gdrop=self.flag_gdrop)
         layers = linear(layers, ndim, 1, sig=self.flag_sigmoid, wn=self.flag_wn)
         return nn.Sequential(*layers), ndim
@@ -165,10 +167,10 @@ class Discriminator(nn.Module):
         ndim = int(ndim)
         layers = []
 
-        # layers = conv(layers, ndim, ndim, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn, pixel=False)
-        layers = conv(layers, ndim, ndim * 2, 3, 2, 1, self.flag_leaky, self.flag_bn, self.flag_wn, pixel=False, gdrop=self.flag_gdrop)
+        #layers = conv(layers, ndim, ndim, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn, pixel=False)
+        layers = conv(layers, ndim, ndim * 2, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn, pixel=False, gdrop=self.flag_gdrop)
 
-        # layers.append(nn.AvgPool3d(kernel_size=2))  # scale up by factor of 2.0
+        layers.append(nn.AvgPool3d(kernel_size=2))  # scale up by factor of 2.0
         return nn.Sequential(*layers), ndim, layer_name
 
     def from_rgb_block(self, ndim):
@@ -249,13 +251,28 @@ class Discriminator(nn.Module):
         return x
 
 
-
 # defined for code simplicity.
-def deconv(layers, c_in, c_out, k_size, stride=1, pad=0, leaky=True, bn=False, wn=False, pixel=False, only=False):
+def Trans_conv(layers, c_in, c_out, k_size, stride=1, pad=0, leaky=True, bn=False, wn=False, pixel=False, only=False):
     if wn:
         layers.append(equalized_deconv3d(c_in, c_out, k_size, stride, pad))
     else:
         layers.append(nn.ConvTranspose3d(c_in, c_out, k_size, stride, pad))
+    if not only:
+        if leaky:
+            layers.append(nn.LeakyReLU(0.2))
+        else:
+            layers.append(nn.ReLU())
+        if bn:      layers.append(nn.BatchNorm3d(c_out))
+        if pixel:   layers.append(pixelwise_norm_layer())
+    return layers
+
+
+# defined for code simplicity.
+def deconv(layers, c_in, c_out, k_size, stride=1, pad=0, leaky=True, bn=False, wn=False, pixel=False, only=False):
+    if wn:
+        layers.append(equalized_conv3d(c_in, c_out, k_size, stride, pad))
+    else:
+        layers.append(nn.Conv3d(c_in, c_out, k_size, stride, pad))
     if not only:
         if leaky:
             layers.append(nn.LeakyReLU(0.2))

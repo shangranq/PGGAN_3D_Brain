@@ -1,0 +1,7 @@
+# exclude following
+*.csv
+*.txt
+/images/*
+/runs*/*
+/checkpoint_dir/*
+/__pycache__/*

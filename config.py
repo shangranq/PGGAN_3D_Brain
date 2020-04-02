@@ -25,6 +25,7 @@ parser.add_argument('--trns_tick', type=int, default=200)       # transition tic
 parser.add_argument('--stab_tick', type=int, default=100)       # stabilization tick
 parser.add_argument('--ncritic', type=int, default=5)           # train n time critic then train one time generator
 parser.add_argument('--Lambda', type=int, default=10)           # weight in front of gradient penalty
+parser.add_argument('--start_resl', type=int, default=2)        # start from start_resl to 7
 
 ## network structure.
 parser.add_argument('--flag_wn', type=bool, default=True)           # use of equalized-learning rate.
@@ -37,6 +38,7 @@ parser.add_argument('--flag_sigmoid', type=bool, default=False)     # use of sig
 parser.add_argument('--flag_add_noise', type=bool, default=False)   # add noise to the real image(x)
 parser.add_argument('--flag_norm_latent', type=bool, default=False) # pixelwise normalization of latent vector (z)
 parser.add_argument('--flag_add_drift', type=bool, default=False)   # add drift loss
+parser.add_argument('--upsam_mode', type=str, default='nearest')   # add drift loss
 
 
 ## optimizer setting.
@@ -49,6 +51,11 @@ parser.add_argument('--beta2', type=float, default=0.99)            # beta2 for 
 parser.add_argument('--use_tb', type=bool, default=False)            # enable tensorboard visualization
 parser.add_argument('--save_img_every', type=int, default=20)       # save images every specified iteration.
 parser.add_argument('--display_tb_every', type=int, default=5)      # display progress every specified iteration.
+
+
+## model weights
+parser.add_argument('--G_pth', type=str, default='')       # save images every specified iteration.
+parser.add_argument('--D_pth', type=str, default='')      # display progress every specified iteration.
 
 
 ## parse and save config.
