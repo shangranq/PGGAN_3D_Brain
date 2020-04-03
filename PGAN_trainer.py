@@ -15,10 +15,6 @@ import torch.autograd as autograd
 import nvidia_smi
 from torch.utils.tensorboard import SummaryWriter
 
-"""
-1. layer normalization 
-2. bilinear up-down sample 
-"""
 
 class MyDataParallel(nn.DataParallel):
     """
@@ -41,37 +37,7 @@ class ProgressiveGANTrainer:
         self.config = config
         if torch.cuda.is_available():
             self.use_cuda = True
-
-        self.nz = config.nz
-        self.optimizer = config.optimizer
-
-        self.start_resl = config.start_resl
-        self.start_resl = 2
-
-        self.resl = self.start_resl  # we start from 2^2 = 4
-        self.lr = config.lr
-        self.eps_drift = config.eps_drift
-        self.smoothing = config.smoothing
-        self.max_resl = config.max_resl
-        self.trns_tick = config.trns_tick
-        self.stab_tick = config.stab_tick
-        self.TICK = config.TICK
-        self.globalIter = 0
-        self.globalTick = 0
-        self.kimgs = 0
-        self.stack = 0
-        self.epoch = 0
-        self.fadein = {'gen': None, 'dis': None}
-        self.phase = 'init'
-        self.flag_flush_gen = False
-        self.flag_flush_dis = False
-        self.flag_add_noise = self.config.flag_add_noise
-        self.flag_add_drift = self.config.flag_add_drift
-        self.upsam_mode = self.config.upsam_mode  # either 'nearest' or 'trilinear'
-
-        self.batchSize = {2: 64 * 3, 3: 64 * 3, 4: 64 * 3, 5: 64 * 3, 6: 32 * 3, 7: 10 * 3}
-        self.fadeInEpochs = {2: 0, 3: 5000, 4: 5000, 5: 5000, 6: 5000, 7: 5000}
-        self.stableEpochs = {2: 5000, 3: 5000, 4: 5000, 5: 5000, 6: 5000, 7: 5000}
+        ngpu = config.n_gpu
 
         # network
         self.G = net.Generator(config).cuda()
@@ -80,21 +46,37 @@ class ProgressiveGANTrainer:
         print(self.G.model)
         print('Discriminator structure: ')
         print(self.D.model)
+        devices = [i for i in range(ngpu)]
+        self.G = MyDataParallel(self.G, device_ids=devices)
+        self.D = MyDataParallel(self.D, device_ids=devices)
+
+        if config.start_resl != 2:
+            self.load_model(level=config.start_resl - 1)  # if load_resl==3, model loaded was done on training at 3, should start with resl = 4
+
+        self.nz = config.nz
+        self.optimizer = config.optimizer
+        self.lr = config.lr
+
+        self.start_resl = config.start_resl
+        self.max_resl = config.max_resl
+
+        self.fadein = {'gen': None, 'dis': None}
+        self.upsam_mode = self.config.G_upsam_mode  # either 'nearest' or 'trilinear'
+
+        self.batchSize = {2: 64 * ngpu, 3: 64 * ngpu, 4: 64 * ngpu, 5: 64 * ngpu, 6: 32 * ngpu, 7: 10 * ngpu}
+        self.fadeInEpochs = {2: 0, 3: 1, 4: 1, 5: 1, 6: 5000, 7: 5000}
+        self.stableEpochs = {2: 0, 3: 0, 4: 0, 5: 500000, 6: 5000, 7: 5000}
+
+        # size 16 need 5000-7000 enough
 
         self.writer = SummaryWriter('runs_new')
         self.global_batch_done = 0
 
-        self.G = MyDataParallel(self.G, device_ids=[0, 1, 2])
-        self.D = MyDataParallel(self.D, device_ids=[0, 1, 2])
-
-        if self.start_resl != 2:
-            self.load_model(level=self.start_resl - 1)  # if load_resl==3, model loaded was done on training at 3, should start with resl = 4
-
         # define all dataloaders into a dictionary
         self.dataloaders = {}
-        for self.resl in range(2, self.max_resl + 1):
-            self.dataloaders[self.resl] = DataLoader(DL.Data('/scratch2/xzhou/mri/resl{}/'.format(2 ** self.resl)),
-                                                     batch_size=self.batchSize[self.resl], shuffle=True,
+        for resl in range(self.start_resl, self.max_resl + 1):
+            self.dataloaders[resl] = DataLoader(DL.Data(config.train_data_root + 'resl{}/'.format(2 ** resl)),
+                                                     batch_size=self.batchSize[resl], shuffle=True,
                                                      drop_last=True)
 
         # ship new model to cuda, and update optimizer
@@ -111,9 +93,9 @@ class ProgressiveGANTrainer:
         # optimizer
         betas = (self.config.beta1, self.config.beta2)
         if self.optimizer == 'adam':
-            self.opt_g = Adam(filter(lambda p: p.requires_grad, self.G.parameters()), lr=self.lr/(2**(self.resl-2)), betas=betas,
+            self.opt_g = Adam(filter(lambda p: p.requires_grad, self.G.parameters()), lr=self.lr, betas=betas,
                               weight_decay=0.0)
-            self.opt_d = Adam(filter(lambda p: p.requires_grad, self.D.parameters()), lr=self.lr/(2**(self.resl-2)), betas=betas,
+            self.opt_d = Adam(filter(lambda p: p.requires_grad, self.D.parameters()), lr=self.lr, betas=betas,
                               weight_decay=0.0)
 
 
@@ -139,6 +121,11 @@ class ProgressiveGANTrainer:
             self.G.flush_network()
             self.D.flush_network()
             self.renew_everything()
+
+            print('Generator stable structure: ')
+            print(self.G.model)
+            print('Discriminator stable structure: ')
+            print(self.D.model)
 
             # stable training
             for epoch in range(self.stableEpochs[self.resl]):
@@ -188,7 +175,7 @@ class ProgressiveGANTrainer:
             Wasserstein_D = - D_real - D_fake
             self.opt_d.step()
 
-            if batches_done % (10 - self.resl) == 0: # ncritic = 10 - self.resl
+            if self.global_batch_done % self.config.ncritic == 0: # ncritic = 10 - self.resl
                 ###########################
                 # (2) Update G network
                 ###########################
@@ -202,7 +189,7 @@ class ProgressiveGANTrainer:
                 G_cost.backward()
                 self.opt_g.step()
 
-            if batches_done % 100 == 0:
+            if self.global_batch_done % 100 == 0:
                 try:
                     print(
                         stage + " {} ".format(2**self.resl) + "[Epoch %d/%d] [Batch %d/%d] [D cost: %f] [G cost: %f] [W distance: %f] [grad norm: %f]"

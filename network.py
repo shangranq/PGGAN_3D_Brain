@@ -9,19 +9,19 @@ from custom_layers import *
 
 
 class Generator(nn.Module):
+
     def __init__(self, config):
         super(Generator, self).__init__()
         self.config = config
-        self.flag_bn = config.flag_bn
-        self.flag_pixelwise = config.flag_pixelwise
-        self.flag_wn = config.flag_wn
-        self.flag_leaky = config.flag_leaky
-        self.flag_tanh = config.flag_tanh
-        self.flag_norm_latent = config.flag_norm_latent
-        self.upsam_mode = config.upsam_mode  # either 'nearest' or 'trilinear'
-        self.nc = config.nc    # color channel number of image
-        self.nz = config.nz    # random noise dimension
-        self.ngf = config.ngf  # first conv layer out_channel number
+        self.eq = config.equal
+        self.bn = config.G_batchnorm
+        self.pixel = config.G_pixelnorm
+        self.leaky = config.G_leaky
+        self.tanh = config.G_tanh
+        self.upsamp = config.G_upsam_mode
+        self.nc = config.nc
+        self.nz = config.nz
+        self.ngf = config.ngf
         self.layer_name = None
         self.module_names = []
         self.model = self.get_init_gen()
@@ -39,35 +39,24 @@ class Generator(nn.Module):
     def first_block(self):
         layers = []
         ndim = self.ngf
-        if self.flag_norm_latent:
-            layers.append(pixelwise_norm_layer())
-        layers = Trans_conv(layers, self.nz, ndim, 4, 1, 0, self.flag_leaky, self.flag_bn, self.flag_wn, self.flag_pixelwise)
-        #layers = deconv(layers, ndim, ndim, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn, self.flag_pixelwise)
+        layers = G_deconv(layers, self.nz, ndim, 4, 1, 0, leaky=self.leaky, bn=self.bn, eq=self.eq, pixel=self.pixel)
         return nn.Sequential(*layers), ndim
 
 
     def intermediate_block(self, resl):
-
-        layer_name = 'intermediate_{}x{}_{}x{}'.format(int(pow(2, resl - 1)), int(pow(2, resl - 1)), int(pow(2, resl)),
-                                                       int(pow(2, resl)))
+        layer_name = 'intermediate_{}x{}_{}x{}'.format(int(pow(2, resl-1)),int(pow(2, resl-1)),int(pow(2, resl)),int(pow(2, resl)))
         ndim = self.ngf / 2**(resl-2)
-
         ndim = int(ndim)
-
         layers = []
-        layers.append(nn.Upsample(scale_factor=2, mode=self.upsam_mode))  # scale up by factor of 2.0
-
-        layers = deconv(layers, ndim*2, ndim, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn, self.flag_pixelwise)
-        #layers = deconv(layers, ndim, ndim, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn, self.flag_pixelwise)
-
+        layers.append(nn.Upsample(scale_factor=2, mode=self.upsamp))
+        layers = G_conv(layers, ndim*2, ndim, 3, 1, 1, leaky=self.leaky, bn=self.bn, eq=self.eq, pixel=self.pixel)
         return nn.Sequential(*layers), ndim, layer_name
 
 
     def to_rgb_block(self, c_in):
         layers = []
-        layers = deconv(layers, c_in, self.nc, 1, 1, 0, self.flag_leaky, self.flag_bn, self.flag_wn,
-                        self.flag_pixelwise, only=True)
-        if self.flag_tanh:  layers.append(nn.Tanh())
+        layers = G_conv(layers, c_in, self.nc, 1, 1, 0, only=True)
+        if self.tanh:  layers.append(nn.Tanh())
         return nn.Sequential(*layers)
 
 
@@ -86,7 +75,7 @@ class Generator(nn.Module):
                                                                                        int(pow(2, resl))))
             low_resl_to_rgb = deepcopy_module(self.model, 'to_rgb_block')
             prev_block = nn.Sequential()
-            prev_block.add_module('low_resl_upsample', nn.Upsample(scale_factor=2, mode=self.upsam_mode))
+            prev_block.add_module('low_resl_upsample', nn.Upsample(scale_factor=2, mode=self.upsamp))
             prev_block.add_module('low_resl_to_rgb', low_resl_to_rgb)
 
             inter_block, ndim, self.layer_name = self.intermediate_block(resl)
@@ -133,50 +122,50 @@ class Generator(nn.Module):
 
 
 class Discriminator(nn.Module):
+
     def __init__(self, config):
         super(Discriminator, self).__init__()
         self.config = config
-        self.flag_bn = config.flag_bn
-        self.flag_pixelwise = config.flag_pixelwise
-        self.flag_wn = config.flag_wn
-        self.flag_leaky = config.flag_leaky
-        self.flag_sigmoid = config.flag_sigmoid
-        self.flag_gdrop = config.flag_gdrop
-        self.nz = config.nz
+        self.eq = config.equal
+        self.gn = config.D_groupnorm
+        self.pixel = config.D_pixelnorm
+        self.leaky = config.D_leaky
+        self.gdrop = config.D_genedrop
+        self.sigmoid = config.D_sigmoid
         self.nc = config.nc
         self.ndf = config.ndf
         self.layer_name = None
         self.module_names = []
         self.model = self.get_init_dis()
 
+
     def last_block(self):
-        # add minibatch_std_concat_layer later.
         ndim = self.ndf
         layers = []
-        # layers.append(minibatch_std_concat_layer())
-        #layers = conv(layers, ndim, ndim, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn, pixel=False)
-        layers = conv(layers, ndim, ndim, 4, 1, 0, self.flag_leaky, self.flag_bn, self.flag_wn, pixel=False, gdrop=self.flag_gdrop)
-        layers = linear(layers, ndim, 1, sig=self.flag_sigmoid, wn=self.flag_wn)
+        layers = D_conv(layers, ndim, ndim, 4, 1, 0, leaky=self.leaky, gn=self.gn, eq=self.eq, pixel=self.pixel, gdrop=self.gdrop)
+        layers = linear(layers, ndim, 1, sig=self.sigmoid, eq=self.eq)
         return nn.Sequential(*layers), ndim
 
-    def intermediate_block(self, resl):
 
-        layer_name = 'intermediate_{}x{}_{}x{}'.format(int(pow(2, resl)), int(pow(2, resl)), int(pow(2, resl - 1)),
-                                                       int(pow(2, resl - 1)))
+    def intermediate_block(self, resl):
+        layer_name = 'intermediate_{}x{}_{}x{}'.format(int(pow(2,resl)),int(pow(2,resl)),int(pow(2,resl-1)),int(pow(2,resl-1)))
         ndim = self.ndf / 2**(resl-2)
         ndim = int(ndim)
         layers = []
 
-        #layers = conv(layers, ndim, ndim, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn, pixel=False)
-        layers = conv(layers, ndim, ndim * 2, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn, pixel=False, gdrop=self.flag_gdrop)
+        # layers = D_conv(layers, ndim, ndim * 2, 3, 1, 1, leaky=self.leaky, gn=self.gn, eq=self.eq, pixel=self.pixel, gdrop=self.gdrop)
+        # layers.append(nn.AvgPool3d(kernel_size=2))  # scale up by factor of 2.0
+        # return nn.Sequential(*layers), ndim, layer_name
 
-        layers.append(nn.AvgPool3d(kernel_size=2))  # scale up by factor of 2.0
+        layers = D_conv(layers, ndim, ndim * 2, 4, 2, 1, leaky=self.leaky, gn=self.gn, eq=self.eq, pixel=self.pixel, gdrop=self.gdrop)
         return nn.Sequential(*layers), ndim, layer_name
+
 
     def from_rgb_block(self, ndim):
         layers = []
-        layers = conv(layers, self.nc, ndim, 1, 1, 0, self.flag_leaky, self.flag_bn, self.flag_wn, pixel=False, gdrop=self.flag_gdrop)
+        layers = D_conv(layers, self.nc, ndim, 1, 1, 0, leaky=self.leaky, gn=self.gn, eq=self.eq, pixel=self.pixel, gdrop=self.gdrop)
         return nn.Sequential(*layers)
+
 
     def get_init_dis(self):
         model = nn.Sequential()
@@ -251,60 +240,67 @@ class Discriminator(nn.Module):
         return x
 
 
+
 # defined for code simplicity.
-def Trans_conv(layers, c_in, c_out, k_size, stride=1, pad=0, leaky=True, bn=False, wn=False, pixel=False, only=False):
-    if wn:
+def G_deconv(layers, c_in, c_out, k_size, stride=1, pad=0, leaky=True, bn=False, eq=False, pixel=False, only=False):
+    if eq:
         layers.append(equalized_deconv3d(c_in, c_out, k_size, stride, pad))
     else:
         layers.append(nn.ConvTranspose3d(c_in, c_out, k_size, stride, pad))
     if not only:
+        if bn:
+            layers.append(nn.BatchNorm3d(c_out))
+        if pixel:
+            layers.append(pixelwise_norm_layer())
         if leaky:
             layers.append(nn.LeakyReLU(0.2))
         else:
             layers.append(nn.ReLU())
-        if bn:      layers.append(nn.BatchNorm3d(c_out))
-        if pixel:   layers.append(pixelwise_norm_layer())
     return layers
 
 
-# defined for code simplicity.
-def deconv(layers, c_in, c_out, k_size, stride=1, pad=0, leaky=True, bn=False, wn=False, pixel=False, only=False):
-    if wn:
+def G_conv(layers, c_in, c_out, k_size, stride=1, pad=0, leaky=True, bn=False, eq=False, pixel=False, only=False):
+    if eq:
         layers.append(equalized_conv3d(c_in, c_out, k_size, stride, pad))
     else:
         layers.append(nn.Conv3d(c_in, c_out, k_size, stride, pad))
     if not only:
+        if bn:
+            layers.append(nn.BatchNorm3d(c_out))
+        if pixel:
+            layers.append(pixelwise_norm_layer())
         if leaky:
             layers.append(nn.LeakyReLU(0.2))
         else:
             layers.append(nn.ReLU())
-        if bn:      layers.append(nn.BatchNorm3d(c_out))
-        if pixel:   layers.append(pixelwise_norm_layer())
     return layers
 
 
-def conv(layers, c_in, c_out, k_size, stride=1, pad=0, leaky=True, bn=False, wn=False, pixel=False, gdrop=True, only=False):
-    if gdrop:       layers.append(generalized_drop_out(mode='prop', strength=0.0))
-    if wn:
-        layers.append(equalized_conv3d(c_in, c_out, k_size, stride, pad, initializer='kaiming'))
+def D_conv(layers, c_in, c_out, k_size, stride=1, pad=0, leaky=True, gn=False, eq=False, pixel=False, gdrop=True, only=False):
+    if gdrop:
+        layers.append(generalized_drop_out(mode='prop', strength=0.0))
+    if eq:
+        layers.append(equalized_conv3d(c_in, c_out, k_size, stride, pad))
     else:
         layers.append(nn.Conv3d(c_in, c_out, k_size, stride, pad))
     if not only:
+        if gn:
+            layers.append(nn.GroupNorm(1, c_out))
+        if pixel:
+            layers.append(pixelwise_norm_layer())
         if leaky:
             layers.append(nn.LeakyReLU(0.2))
         else:
             layers.append(nn.ReLU())
-        if bn:      layers.append(nn.BatchNorm3d(c_out))
-        if pixel:   layers.append(pixelwise_norm_layer())
     return layers
 
 
-def linear(layers, c_in, c_out, sig=True, wn=False):
+def linear(layers, c_in, c_out, sig=True, eq=False):
     layers.append(Flatten())
-    if wn:
+    if eq:
         layers.append(equalized_linear(c_in, c_out))
     else:
-        layers.append(Linear(c_in, c_out))
+        layers.append(nn.Linear(c_in, c_out))
     if sig:     layers.append(nn.Sigmoid())
     return layers
 
