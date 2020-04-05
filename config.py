@@ -25,8 +25,8 @@ parser.add_argument('--max_resl', type=int, default=7)          # train til 128 
 ## network structure. G and D
 parser.add_argument('--equal', type=bool, default=False)           # use of equalized-learning rate.
 # network structure G
-parser.add_argument('--G_batchnorm', type=bool, default=True)      # batch normalization
-parser.add_argument('--G_pixelnorm', type=bool, default=False)     # pixel wise normalization
+parser.add_argument('--G_batchnorm', type=bool, default=False)      # batch normalization
+parser.add_argument('--G_pixelnorm', type=bool, default=True)     # pixel wise normalization
 parser.add_argument('--G_leaky', type=bool, default=True)          # use of leaky relu instead of relu.
 parser.add_argument('--G_tanh', type=bool, default=False)           # use of tanh at the end of the generator.
 parser.add_argument('--G_upsam_mode', type=str, default='nearest') # upsample mode

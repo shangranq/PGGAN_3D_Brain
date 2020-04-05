@@ -103,62 +103,131 @@ class pixelwise_norm_layer(nn.Module):
         return x / (torch.mean(x ** 2, dim=1, keepdim=True) + self.eps) ** 0.5
 
 
-# for equaliaeed-learning rate.
-class equalized_conv3d(nn.Module):
-    def __init__(self, c_in, c_out, k_size, stride, pad, initializer='kaiming', bias=False):
-        super(equalized_conv3d, self).__init__()
-        self.conv = nn.Conv3d(c_in, c_out, k_size, stride, pad, bias=False)
-        if initializer == 'kaiming':
-            kaiming_normal_(self.conv.weight, a=calculate_gain('conv3d'))
-        elif initializer == 'xavier':
-            xavier_normal(self.conv.weight)
+############################################################################################################
+# ref: https://github.com/facebookresearch/pytorch_GAN_zoo/blob/master/models/networks/custom_layers.py
 
-        conv_w = self.conv.weight.data.clone()
-        self.bias = torch.nn.Parameter(torch.FloatTensor(c_out).fill_(0))
-        self.scale = (torch.mean(self.conv.weight.data ** 2)) ** 0.5
-        self.conv.weight.data.copy_(self.conv.weight.data / self.scale)
+def getLayerNormalizationFactor(x):
+    r"""
+    Get He's constant for the given layer
+    https://www.cv-foundation.org/openaccess/content_iccv_2015/papers/He_Delving_Deep_into_ICCV_2015_paper.pdf
+    """
+    size = x.weight.size()
+    fan_in = prod(size[1:])
 
-    def forward(self, x):
-        x = self.conv(x.mul(self.scale))
-        return x + self.bias.view(1, -1, 1, 1, 1).expand_as(x)
+    return math.sqrt(2.0 / fan_in)
 
 
-class equalized_deconv3d(nn.Module):
-    def __init__(self, c_in, c_out, k_size, stride, pad, initializer='kaiming'):
-        super(equalized_deconv3d, self).__init__()
-        self.deconv = nn.ConvTranspose3d(c_in, c_out, k_size, stride, pad, bias=False)
-        if initializer == 'kaiming':
-            kaiming_normal_(self.deconv.weight, a=calculate_gain('conv3d'))
-        elif initializer == 'xavier':
-            xavier_normal(self.deconv.weight)
+class ConstrainedLayer(nn.Module):
+    r"""
+    A handy refactor that allows the user to:
+    - initialize one layer's bias to zero
+    - apply He's initialization at runtime
+    """
 
-        deconv_w = self.deconv.weight.data.clone()
-        self.bias = torch.nn.Parameter(torch.FloatTensor(c_out).fill_(0))
-        self.scale = (torch.mean(self.deconv.weight.data ** 2)) ** 0.5
-        self.deconv.weight.data.copy_(self.deconv.weight.data / self.scale)
+    def __init__(self,
+                 module,
+                 equalized=True,
+                 lrMul=1.0,
+                 initBiasToZero=True):
+        r"""
+        equalized (bool): if true, the layer's weight should evolve within
+                         the range (-1, 1)
+        initBiasToZero (bool): if true, bias will be initialized to zero
+        """
 
-    def forward(self, x):
-        x = self.deconv(x.mul(self.scale))
-        return x + self.bias.view(1, -1, 1, 1, 1).expand_as(x)
+        super(ConstrainedLayer, self).__init__()
 
+        self.module = module
+        self.equalized = equalized
 
-class equalized_linear(nn.Module):
-    def __init__(self, c_in, c_out, initializer='kaiming'):
-        super(equalized_linear, self).__init__()
-        self.linear = nn.Linear(c_in, c_out, bias=False)
-        if initializer == 'kaiming':
-            kaiming_normal_(self.linear.weight, a=calculate_gain('linear'))
-        elif initializer == 'xavier':
-            torch.nn.init.xavier_normal(self.linear.weight)
-
-        linear_w = self.linear.weight.data.clone()
-        self.bias = torch.nn.Parameter(torch.FloatTensor(c_out).fill_(0))
-        self.scale = (torch.mean(self.linear.weight.data ** 2)) ** 0.5
-        self.linear.weight.data.copy_(self.linear.weight.data / self.scale)
+        if initBiasToZero:
+            self.module.bias.data.fill_(0)
+        if self.equalized:
+            self.module.weight.data.normal_(0, 1)
+            self.module.weight.data /= lrMul
+            self.weight = getLayerNormalizationFactor(self.module) * lrMul
 
     def forward(self, x):
-        x = self.linear(x.mul(self.scale))
-        return x + self.bias.view(1, -1).expand_as(x)
+
+        x = self.module(x)
+        if self.equalized:
+            x *= self.weight
+        return x
+
+
+class equalized_conv3d(ConstrainedLayer):
+
+    def __init__(self,
+                 c_in,
+                 c_out,
+                 k_size,
+                 stride,
+                 pad=0,
+                 bias=True,
+                 **kwargs):
+        r"""
+        A nn.Conv3d module with specific constraints
+        Args:
+            nChannelsPrevious (int): number of channels in the previous layer
+            nChannels (int): number of channels of the current layer
+            kernelSize (int): size of the convolutional kernel
+            padding (int): convolution's padding
+            bias (bool): with bias ?
+        """
+
+        ConstrainedLayer.__init__(self,
+                                  nn.Conv3d(c_in, c_out, k_size, stride, pad, bias=bias),
+                                  **kwargs)
+
+
+class equalized_deconv3d(ConstrainedLayer):
+
+    def __init__(self,
+                 c_in,
+                 c_out,
+                 k_size,
+                 stride,
+                 pad=0,
+                 bias=True,
+                 **kwargs):
+        r"""
+        A nn.Conv3d module with specific constraints
+        Args:
+            nChannelsPrevious (int): number of channels in the previous layer
+            nChannels (int): number of channels of the current layer
+            kernelSize (int): size of the convolutional kernel
+            padding (int): convolution's padding
+            bias (bool): with bias ?
+        """
+
+        ConstrainedLayer.__init__(self,
+                                  nn.ConvTranspose3d(c_in, c_out, k_size, stride, pad, bias=bias),
+                                  **kwargs)
+
+
+class equalized_linear(ConstrainedLayer):
+
+    def __init__(self,
+                 c_in,
+                 c_out,
+                 bias=True,
+                 **kwargs):
+        r"""
+        A nn.Conv3d module with specific constraints
+        Args:
+            nChannelsPrevious (int): number of channels in the previous layer
+            nChannels (int): number of channels of the current layer
+            kernelSize (int): size of the convolutional kernel
+            padding (int): convolution's padding
+            bias (bool): with bias ?
+        """
+
+        ConstrainedLayer.__init__(self,
+                                  nn.Linear(c_in, c_out, bias=bias),
+                                  **kwargs)
+
+# ref: https://github.com/facebookresearch/pytorch_GAN_zoo/blob/master/models/networks/custom_layers.py
+############################################################################################################
 
 
 # ref: https://github.com/github-pengge/PyTorch-progressive_growing_of_gans/blob/master/models/base_model.py

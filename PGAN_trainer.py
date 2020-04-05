@@ -15,6 +15,9 @@ import torch.autograd as autograd
 import nvidia_smi
 from torch.utils.tensorboard import SummaryWriter
 
+"""
+ssh -L 16005:127.0.0.1:6006 sq@155.41.207.229
+"""
 
 class MyDataParallel(nn.DataParallel):
     """
@@ -68,6 +71,7 @@ class ProgressiveGANTrainer:
         self.stableEpochs = {2: 0, 3: 0, 4: 0, 5: 500000, 6: 5000, 7: 5000}
 
         # size 16 need 5000-7000 enough
+        # size 32 need 30000 enough
 
         self.writer = SummaryWriter('runs_new')
         self.global_batch_done = 0
