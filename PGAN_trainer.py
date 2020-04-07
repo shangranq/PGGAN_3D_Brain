@@ -14,6 +14,7 @@ from torch.utils.data import Dataset, DataLoader
 import torch.autograd as autograd
 import nvidia_smi
 from torch.utils.tensorboard import SummaryWriter
+from copy import deepcopy
 
 """
 ssh -L 16005:127.0.0.1:6006 sq@155.41.207.229
@@ -49,6 +50,9 @@ class ProgressiveGANTrainer:
         print(self.G.model)
         print('Discriminator structure: ')
         print(self.D.model)
+
+        self.build_avgG()
+
         devices = [i for i in range(ngpu)]
         self.G = MyDataParallel(self.G, device_ids=devices)
         self.D = MyDataParallel(self.D, device_ids=devices)
@@ -71,7 +75,8 @@ class ProgressiveGANTrainer:
         self.stableEpochs = {2: 0, 3: 0, 4: 0, 5: 500000, 6: 5000, 7: 5000}
 
         # size 16 need 5000-7000 enough
-        # size 32 need 30000 enough
+        # size 32 need 16000-30000 enough
+
 
         self.writer = SummaryWriter('runs_new')
         self.global_batch_done = 0
@@ -88,6 +93,8 @@ class ProgressiveGANTrainer:
 
 
     def renew_everything(self):
+
+        self.build_avgG()
 
         # ship new model to cuda.
         if self.use_cuda:
@@ -162,14 +169,22 @@ class ProgressiveGANTrainer:
             real = data.cuda()
             D_real = self.D(real)
             D_real = -D_real.mean()
-            D_real.backward()
+            D_real.backward(retain_graph=True)
+
+            if self.config.eps_drift > 0:
+                drift_loss = self.config.eps_drift * (D_real ** 2).sum()
+                drift_loss.backward()
 
             # train with fake
             noise = torch.randn(BATCH_SIZE, self.nz).cuda()
             fake = self.G(noise).detach()
             D_fake = self.D(fake)
             D_fake = D_fake.mean()
-            D_fake.backward()
+            D_fake.backward(retain_graph=True)
+
+            if self.config.eps_drift > 0:
+                drift_loss = self.config.eps_drift * (D_fake ** 2).sum()
+                drift_loss.backward()
 
             # train with gradient penalty
             gradient_penalty, grad_norm = self.calc_gradient_penalty(real.data, fake.data)
@@ -179,7 +194,7 @@ class ProgressiveGANTrainer:
             Wasserstein_D = - D_real - D_fake
             self.opt_d.step()
 
-            if self.global_batch_done % self.config.ncritic == 0: # ncritic = 10 - self.resl
+            if self.global_batch_done % self.config.ncritic == 0:
                 ###########################
                 # (2) Update G network
                 ###########################
@@ -192,6 +207,11 @@ class ProgressiveGANTrainer:
                 G_cost = -G
                 G_cost.backward()
                 self.opt_g.step()
+
+            # after D and G parameters updates, update the moving average of G
+            for p, avg_p in zip(self.G.parameters(),
+                                self.avgG.parameters()):
+                avg_p.mul_(0.999).add_(0.001, p.data)
 
             if self.global_batch_done % 100 == 0:
                 try:
@@ -212,6 +232,10 @@ class ProgressiveGANTrainer:
                     fake = self.G(self.test_noise).data.squeeze().cpu().numpy()
                     resolution = 2 ** (self.resl)
                     utils.save_image(fake, "./images/" + "{}^{}".format(resolution, resolution) + stage + "%d.png" % batches_done, nrow=5, ncol=3, scale=self.resl)
+                    del fake
+                    fake = self.avgG(self.test_noise).data.squeeze().cpu().numpy()
+                    resolution = 2 ** (self.resl)
+                    utils.save_image(fake, "./images/" + "{}^{}".format(resolution, resolution) + stage + "%d_avg.png" % batches_done, nrow=5, ncol=3, scale=self.resl)
                     del fake
 
 
@@ -259,6 +283,12 @@ class ProgressiveGANTrainer:
         self.D.load_state_dict(torch.load(D_pth))
         print('successfully loaded the model at level ' + str(level))
 
+    def build_avgG(self):
+        self.avgG = deepcopy(self.G)
+        for param in self.avgG.parameters():
+            param.requires_grad = False
+        if self.use_cuda:
+            self.avgG = nn.DataParallel(self.avgG, device_ids=[0])
 
 
 if __name__ == "__main__":

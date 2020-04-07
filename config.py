@@ -10,7 +10,6 @@ parser.add_argument('--train_data_root', type=str, default='./mri/')
 parser.add_argument('--random_seed', type=int, default=int(time.time()))
 parser.add_argument('--n_gpu', type=int, default=1)             # for Multi-GPU training.
 
-
 ## training parameters.
 parser.add_argument('--lr', type=float, default=0.0002)         # learning rate.
 parser.add_argument('--nc', type=int, default=1)                # color channel.
@@ -21,9 +20,10 @@ parser.add_argument('--ncritic', type=int, default=5)           # train n time c
 parser.add_argument('--Lambda', type=int, default=10)           # weight in front of gradient penalty
 parser.add_argument('--start_resl', type=int, default=2)        # 2 ** resl == size, start_resl = 2 means start size = 4
 parser.add_argument('--max_resl', type=int, default=7)          # train til 128 resoltuion 2 ** 7
+parser.add_argument('--eps_drift', type=float, default=0.001)   # coeff for the drift loss D(x) ** 2.
 
 ## network structure. G and D
-parser.add_argument('--equal', type=bool, default=False)           # use of equalized-learning rate.
+parser.add_argument('--equal', type=bool, default=True)           # use of equalized-learning rate.
 # network structure G
 parser.add_argument('--G_batchnorm', type=bool, default=False)      # batch normalization
 parser.add_argument('--G_pixelnorm', type=bool, default=True)     # pixel wise normalization
@@ -37,17 +37,14 @@ parser.add_argument('--D_genedrop', type=bool, default=False)    # generalized d
 parser.add_argument('--D_leaky', type=bool, default=True)        # use of leaky relu instead of relu.
 parser.add_argument('--D_sigmoid', type=bool, default=False)     # use of sigmoid at the end of the discriminator.
 
-
 ## optimizer setting.
 parser.add_argument('--optimizer', type=str, default='adam')        # optimizer type.
 parser.add_argument('--beta1', type=float, default=0.0)             # beta1 for adam.
 parser.add_argument('--beta2', type=float, default=0.99)            # beta2 for adam.
 
-
 ## model weights
 parser.add_argument('--G_pth', type=str, default='')       # save images every specified iteration.
 parser.add_argument('--D_pth', type=str, default='')      # display progress every specified iteration.
-
 
 ## parse and save config.
 config, _ = parser.parse_known_args()
