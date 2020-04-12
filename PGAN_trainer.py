@@ -15,6 +15,8 @@ import torch.autograd as autograd
 import nvidia_smi
 from torch.utils.tensorboard import SummaryWriter
 from copy import deepcopy
+from metrics.msssim import MultiScaleSSIM as MSSSIM
+
 
 """
 ssh -L 16005:127.0.0.1:6006 sq@155.41.207.229
@@ -43,6 +45,17 @@ class ProgressiveGANTrainer:
             self.use_cuda = True
         ngpu = config.n_gpu
 
+        # prepare folders
+        if not os.path.exists('./checkpoint_dir/' + config.model_name):
+            os.mkdir('./checkpoint_dir/' + config.model_name)
+        if not os.path.exists('./images/' + config.model_name):
+            os.mkdir('./images/' + config.model_name)
+        if not os.path.exists('./tb_log/' + config.model_name):
+            os.mkdir('./tb_log/' + config.model_name)
+        if not os.path.exists('./code_backup/' + config.model_name):
+            os.mkdir('./code_backup/' + config.model_name)
+        os.system('cp *.py '+ './code_backup/' + config.model_name)
+
         # network
         self.G = net.Generator(config).cuda()
         self.D = net.Discriminator(config).cuda()
@@ -51,34 +64,29 @@ class ProgressiveGANTrainer:
         print('Discriminator structure: ')
         print(self.D.model)
 
-        self.build_avgG()
-
         devices = [i for i in range(ngpu)]
         self.G = MyDataParallel(self.G, device_ids=devices)
         self.D = MyDataParallel(self.D, device_ids=devices)
 
-        if config.start_resl != 2:
-            self.load_model(level=config.start_resl - 1)  # if load_resl==3, model loaded was done on training at 3, should start with resl = 4
+        self.start_resl = config.start_resl
+        self.max_resl = config.max_resl
+
+        self.load_model(G_pth=config.G_pth, D_pth=config.D_pth)
 
         self.nz = config.nz
         self.optimizer = config.optimizer
         self.lr = config.lr
 
-        self.start_resl = config.start_resl
-        self.max_resl = config.max_resl
-
         self.fadein = {'gen': None, 'dis': None}
-        self.upsam_mode = self.config.G_upsam_mode  # either 'nearest' or 'trilinear'
+        self.upsam_mode = self.config.G_upsam_mode  # either 'nearest' or 'tri-linear'
 
         self.batchSize = {2: 64 * ngpu, 3: 64 * ngpu, 4: 64 * ngpu, 5: 64 * ngpu, 6: 32 * ngpu, 7: 10 * ngpu}
-        self.fadeInEpochs = {2: 0, 3: 1, 4: 1, 5: 1, 6: 5000, 7: 5000}
-        self.stableEpochs = {2: 0, 3: 0, 4: 0, 5: 500000, 6: 5000, 7: 5000}
+        self.fadeInEpochs = {2: 0, 3: 1, 4: 1,    5: 2000,   6: 5000, 7: 5000}
+        self.stableEpochs = {2: 0, 3: 0, 4: 3510, 5: 50000, 6: 5000, 7: 5000}
 
         # size 16 need 5000-7000 enough
         # size 32 need 16000-30000 enough
 
-
-        self.writer = SummaryWriter('runs_new')
         self.global_batch_done = 0
 
         # define all dataloaders into a dictionary
@@ -111,39 +119,43 @@ class ProgressiveGANTrainer:
 
 
     def train(self):
-
         self.test_noise = torch.randn(5, self.nz).cuda()
-
         for self.resl in range(self.start_resl, self.max_resl + 1):
+            self.train_resl(self.resl)
 
-            # fadein
-            if self.fadeInEpochs[self.resl]:
-                self.G.grow_network(self.resl)
-                self.D.grow_network(self.resl)
-                self.renew_everything()
-                self.fadein['gen'] = dict(self.G.model.named_children())['fadein_block']
-                self.fadein['dis'] = dict(self.D.model.named_children())['fadein_block']
-                alpha_step = 1.0 / float(self.fadeInEpochs[self.resl])
-                for epoch in range(self.fadeInEpochs[self.resl]):
-                    self.trainOnEpoch(self.resl, epoch, 'fadein', self.fadeInEpochs[self.resl])
-                    self.fadein['gen'].update_alpha(alpha_step)
-                    self.fadein['dis'].update_alpha(alpha_step)
-
-            self.G.flush_network()
-            self.D.flush_network()
+    def train_resl(self, resl):
+        # save tb_log for each resl separately
+        self.writer = SummaryWriter('./tb_log/' + config.model_name + '/{}/'.format(resl))
+        # fade in training at scale resl
+        if self.fadeInEpochs[resl]:
+            self.G.grow_network(resl)
+            self.D.grow_network(resl)
             self.renew_everything()
+            self.fadein['gen'] = dict(self.G.model.named_children())['fadein_block']
+            self.fadein['dis'] = dict(self.D.model.named_children())['fadein_block']
+            alpha_step = 1.0 / float(self.fadeInEpochs[resl])
+            for epoch in range(self.fadeInEpochs[self.resl]):
+                self.trainOnEpoch(resl, epoch, 'fadein', self.fadeInEpochs[resl])
+                self.fadein['gen'].update_alpha(alpha_step)
+                self.fadein['dis'].update_alpha(alpha_step)
 
-            print('Generator stable structure: ')
-            print(self.G.model)
-            print('Discriminator stable structure: ')
-            print(self.D.model)
+        self.G.flush_network()
+        self.D.flush_network()
+        self.renew_everything()
+        self.fadein = {'gen': None, 'dis': None}
 
-            # stable training
-            for epoch in range(self.stableEpochs[self.resl]):
-                self.trainOnEpoch(self.resl, epoch, 'stable', self.stableEpochs[self.resl])
+        print('Generator stable structure: ')
+        print(self.G.model)
+        print('Discriminator stable structure: ')
+        print(self.D.model)
 
-            torch.save(self.G.state_dict(), './checkpoint_dir/G_stable_{}.pth'.format(self.resl))
-            torch.save(self.D.state_dict(), './checkpoint_dir/D_stable_{}.pth'.format(self.resl))
+        # stable training at scale resl
+        for epoch in range(self.stableEpochs[resl]):
+            self.trainOnEpoch(resl, epoch, 'stable', self.stableEpochs[resl])
+            if epoch % 500 == 0:
+                torch.save(self.G.state_dict(), './checkpoint_dir/'+config.model_name+'/G_{}_{}.pth'.format(resl, epoch))
+                torch.save(self.D.state_dict(), './checkpoint_dir/'+config.model_name+'/D_{}_{}.pth'.format(resl, epoch))
+                torch.save(self.avgG.state_dict(), './checkpoint_dir/'+config.model_name+'/avgG_{}_{}.pth'.format(resl, epoch))
 
 
     def trainOnEpoch(self, resl, epoch, stage, maxEpochs):
@@ -165,7 +177,8 @@ class ProgressiveGANTrainer:
             self.D.zero_grad()
 
             # train with real
-            data = self.interpolate(data, alpha)
+            if alpha < 1:
+                data = self.interpolate(data, alpha)
             real = data.cuda()
             D_real = self.D(real)
             D_real = -D_real.mean()
@@ -213,7 +226,7 @@ class ProgressiveGANTrainer:
                                 self.avgG.parameters()):
                 avg_p.mul_(0.999).add_(0.001, p.data)
 
-            if self.global_batch_done % 100 == 0:
+            if self.global_batch_done % 200 == 0:
                 try:
                     print(
                         stage + " {} ".format(2**self.resl) + "[Epoch %d/%d] [Batch %d/%d] [D cost: %f] [G cost: %f] [W distance: %f] [grad norm: %f]"
@@ -227,16 +240,16 @@ class ProgressiveGANTrainer:
                 except:
                     pass
 
-            if batches_done % 200 == 0:
-                with torch.no_grad():
-                    fake = self.G(self.test_noise).data.squeeze().cpu().numpy()
-                    resolution = 2 ** (self.resl)
-                    utils.save_image(fake, "./images/" + "{}^{}".format(resolution, resolution) + stage + "%d.png" % batches_done, nrow=5, ncol=3, scale=self.resl)
-                    del fake
-                    fake = self.avgG(self.test_noise).data.squeeze().cpu().numpy()
-                    resolution = 2 ** (self.resl)
-                    utils.save_image(fake, "./images/" + "{}^{}".format(resolution, resolution) + stage + "%d_avg.png" % batches_done, nrow=5, ncol=3, scale=self.resl)
-                    del fake
+        if epoch % 20 == 0:
+            with torch.no_grad():
+                fake = self.G(self.test_noise).data.squeeze().cpu().numpy()
+                resolution = 2 ** resl
+                utils.save_image(fake, "./images/"+config.model_name+"/{}^{}".format(resolution, resolution) + stage + "%d.png" % epoch, nrow=5, ncol=3, scale=resl)
+                del fake
+                fake = self.avgG(self.test_noise).data.squeeze().cpu().numpy()
+                resolution = 2 ** resl
+                utils.save_image(fake, "./images/"+config.model_name+"/{}^{}".format(resolution, resolution) + stage + "%d_avg.png" % epoch, nrow=5, ncol=3, scale=resl)
+                del fake
 
 
     def calc_gradient_penalty(self, real_data, fake_data):
@@ -271,9 +284,10 @@ class ProgressiveGANTrainer:
         return x * alpha + lowx_upsample * (1-alpha)
 
 
-    def load_model(self, level):
-        G_pth = './checkpoint_dir/G_stable_{}.pth'.format(level)
-        D_pth = './checkpoint_dir/D_stable_{}.pth'.format(level)
+    def load_model(self, G_pth, D_pth):
+        if not G_pth:
+            return
+        level = int(G_pth.split('_')[-2])
         for resl in range(3, level+1):
             self.G.grow_network(resl)
             self.G.flush_network()
@@ -281,7 +295,9 @@ class ProgressiveGANTrainer:
             self.D.flush_network()
         self.G.load_state_dict(torch.load(G_pth))
         self.D.load_state_dict(torch.load(D_pth))
+        self.start_resl = level + 1
         print('successfully loaded the model at level ' + str(level))
+        print('from ', G_pth, ' and ', D_pth)
 
     def build_avgG(self):
         self.avgG = deepcopy(self.G)

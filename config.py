@@ -9,6 +9,9 @@ parser = argparse.ArgumentParser('PGGAN')
 parser.add_argument('--train_data_root', type=str, default='./mri/')
 parser.add_argument('--random_seed', type=int, default=int(time.time()))
 parser.add_argument('--n_gpu', type=int, default=1)             # for Multi-GPU training.
+parser.add_argument('--model_name', type=str, default='P_G') # for different experiments, model name will be different for recording purpose
+# P_G means use pixel norm (G) and group norm (D)
+# B_G means use batch norm (G) and group norm (D)
 
 ## training parameters.
 parser.add_argument('--lr', type=float, default=0.0002)         # learning rate.
@@ -23,7 +26,7 @@ parser.add_argument('--max_resl', type=int, default=7)          # train til 128 
 parser.add_argument('--eps_drift', type=float, default=0.001)   # coeff for the drift loss D(x) ** 2.
 
 ## network structure. G and D
-parser.add_argument('--equal', type=bool, default=True)           # use of equalized-learning rate.
+parser.add_argument('--equal', type=bool, default=False)           # use of equalized-learning rate.
 # network structure G
 parser.add_argument('--G_batchnorm', type=bool, default=False)      # batch normalization
 parser.add_argument('--G_pixelnorm', type=bool, default=True)     # pixel wise normalization
@@ -43,8 +46,8 @@ parser.add_argument('--beta1', type=float, default=0.0)             # beta1 for 
 parser.add_argument('--beta2', type=float, default=0.99)            # beta2 for adam.
 
 ## model weights
-parser.add_argument('--G_pth', type=str, default='')       # save images every specified iteration.
-parser.add_argument('--D_pth', type=str, default='')      # display progress every specified iteration.
+parser.add_argument('--G_pth', type=str, default='./checkpoint_dir/P_G/G_4_3500.pth')       # save images every specified iteration.
+parser.add_argument('--D_pth', type=str, default='./checkpoint_dir/P_G/D_4_3500.pth')      # display progress every specified iteration.
 
 ## parse and save config.
 config, _ = parser.parse_known_args()

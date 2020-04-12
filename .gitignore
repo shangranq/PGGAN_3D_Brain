@@ -4,5 +4,8 @@
 /mri/*
 /images/*
 /runs*/*
+/tb_log/*
+metrics/__pycache__/*
+/code_backup/*
 /checkpoint_dir/*
 /__pycache__/*
