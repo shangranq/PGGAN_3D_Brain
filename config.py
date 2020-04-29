@@ -6,7 +6,7 @@ import time
 parser = argparse.ArgumentParser('PGGAN')
 
 ## general settings.
-parser.add_argument('--train_data_root', type=str, default='./mri/')
+parser.add_argument('--train_data_root', type=str, default='/scratch/xzhou/mri/')
 parser.add_argument('--random_seed', type=int, default=int(time.time()))
 parser.add_argument('--n_gpu', type=int, default=1)             # for Multi-GPU training.
 parser.add_argument('--model_name', type=str, default='P_G') # for different experiments, model name will be different for recording purpose
@@ -46,8 +46,8 @@ parser.add_argument('--beta1', type=float, default=0.0)             # beta1 for 
 parser.add_argument('--beta2', type=float, default=0.99)            # beta2 for adam.
 
 ## model weights
-parser.add_argument('--G_pth', type=str, default='./checkpoint_dir/P_G/G_4_3500.pth')       # save images every specified iteration.
-parser.add_argument('--D_pth', type=str, default='./checkpoint_dir/P_G/D_4_3500.pth')      # display progress every specified iteration.
+parser.add_argument('--G_pth', type=str, default='./checkpoint_dir/P_G/G_6_10500.pth')       # save images every specified iteration.
+parser.add_argument('--D_pth', type=str, default='./checkpoint_dir/P_G/D_6_10500.pth')      # display progress every specified iteration.
 
 ## parse and save config.
 config, _ = parser.parse_known_args()

@@ -80,9 +80,10 @@ class ProgressiveGANTrainer:
         self.fadein = {'gen': None, 'dis': None}
         self.upsam_mode = self.config.G_upsam_mode  # either 'nearest' or 'tri-linear'
 
-        self.batchSize = {2: 64 * ngpu, 3: 64 * ngpu, 4: 64 * ngpu, 5: 64 * ngpu, 6: 32 * ngpu, 7: 10 * ngpu}
-        self.fadeInEpochs = {2: 0, 3: 1, 4: 1,    5: 2000,   6: 5000, 7: 5000}
-        self.stableEpochs = {2: 0, 3: 0, 4: 3510, 5: 50000, 6: 5000, 7: 5000}
+        self.batchSize = {2: 64 * ngpu, 3: 64 * ngpu, 4: 64 * ngpu, 5: 64 * ngpu, 6: 48 * ngpu, 7: 12 * ngpu}
+        self.fadeInEpochs = {2: 0, 3: 1, 4: 1,    5: 2000,  6: 2000, 7: 2000}
+        self.stableEpochs = {2: 0, 3: 0, 4: 3510, 5: 10100, 6: 10600, 7: 50000}
+        self.ncritic = {2:5, 3:5, 4:5, 5:3, 6:3, 7:3}
 
         # size 16 need 5000-7000 enough
         # size 32 need 16000-30000 enough
@@ -207,7 +208,7 @@ class ProgressiveGANTrainer:
             Wasserstein_D = - D_real - D_fake
             self.opt_d.step()
 
-            if self.global_batch_done % self.config.ncritic == 0:
+            if self.global_batch_done % self.ncritic[resl] == 0:
                 ###########################
                 # (2) Update G network
                 ###########################
@@ -304,7 +305,7 @@ class ProgressiveGANTrainer:
         for param in self.avgG.parameters():
             param.requires_grad = False
         if self.use_cuda:
-            self.avgG = nn.DataParallel(self.avgG, device_ids=[0])
+            self.avgG = nn.DataParallel(self.avgG.module, device_ids=[0])
 
 
 if __name__ == "__main__":
